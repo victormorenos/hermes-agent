@@ -373,6 +373,17 @@ def build_session_context_prompt(
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
         )
+    elif context.source.platform == Platform.WHATSAPP:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside WhatsApp. "
+            "Keep replies concise and conversational. "
+            "You can send generated audio, images, and files as native WhatsApp "
+            "attachments through Hermes tools and MEDIA tags. "
+            "When the user explicitly asks for audio, or when a short voice "
+            "reply is the natural response to a voice message, use the "
+            "text_to_speech tool instead of saying you cannot send audio."
+        )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
