@@ -406,9 +406,10 @@ def build_session_context_prompt(
             "Keep replies concise and conversational. "
             "You can send generated audio, images, and files as native WhatsApp "
             "attachments through Hermes tools and MEDIA tags. "
-            "When the user explicitly asks for audio, or when a short voice "
-            "reply is the natural response to a voice message, use the "
-            "text_to_speech tool instead of saying you cannot send audio."
+            "Use text_to_speech voluntarily when the user explicitly asks for "
+            "audio or when a short voice reply is the natural response to a "
+            "voice message. Keep spoken replies under 30 seconds; if the answer "
+            "is long, send a concise audio reply and offer text details."
         )
 
     # Connected platforms

@@ -57,6 +57,12 @@ gemini = GeminiProfile(
     base_url="https://generativelanguage.googleapis.com/v1beta",
     auth_type="api_key",
     default_aux_model="gemini-3.5-flash",
+    fallback_models=(
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite-preview",
+    ),
 )
 
 gemini_vertex = GeminiProfile(
@@ -70,6 +76,13 @@ gemini_vertex = GeminiProfile(
     base_url="https://aiplatform.googleapis.com/v1/projects/professor-do-iphone/locations/global/publishers/google",
     auth_type="service_account",
     default_aux_model="gemini-flash-lite-latest",
+    fallback_models=(
+        "gemini-flash-lite-latest",
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite-preview",
+    ),
 )
 
 google_gemini_cli = GeminiProfile(

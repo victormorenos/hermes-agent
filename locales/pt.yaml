@@ -16,8 +16,8 @@ approval:
   blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
 
 gateway:
-  approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
-  draining:         "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
+  approval_expired: "⚠️ A aprovação expirou (o agente não está mais aguardando). Peça ao agente para tentar novamente."
+  draining:         "⏳ Aguardando {count} agente(s) ativo(s) terminarem antes de reiniciar..."
   goal_cleared:     "✓ Objetivo removido."
   no_active_goal:   "Não há objetivo ativo."
   config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
@@ -55,12 +55,12 @@ gateway:
 
   approve:
     no_pending:            "Não há nenhum comando pendente para aprovar."
-    once_singular:         "✅ Comando aprovado. O agente está a retomar..."
-    once_plural:           "✅ Comandos aprovados ({count} comandos). O agente está a retomar..."
-    session_singular:      "✅ Comando aprovado (padrão aprovado para esta sessão). O agente está a retomar..."
-    session_plural:        "✅ Comandos aprovados (padrão aprovado para esta sessão) ({count} comandos). O agente está a retomar..."
-    always_singular:       "✅ Comando aprovado (padrão aprovado permanentemente). O agente está a retomar..."
-    always_plural:         "✅ Comandos aprovados (padrão aprovado permanentemente) ({count} comandos). O agente está a retomar..."
+    once_singular:         "✅ Comando aprovado. O agente vai continuar..."
+    once_plural:           "✅ Comandos aprovados ({count} comandos). O agente vai continuar..."
+    session_singular:      "✅ Comando aprovado para esta sessão. O agente vai continuar..."
+    session_plural:        "✅ Comandos aprovados para esta sessão ({count} comandos). O agente vai continuar..."
+    always_singular:       "✅ Comando aprovado sempre. O agente vai continuar..."
+    always_plural:         "✅ Comandos aprovados permanentemente ({count} comandos). O agente vai continuar..."
 
   background:
     usage:                 "Uso: /background <prompt>\nExemplo: /background Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."

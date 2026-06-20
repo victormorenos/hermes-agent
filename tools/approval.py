@@ -1692,9 +1692,9 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     """
     pattern_key = "execute_code"
     description = (
-        "execute_code script execution. The script can spawn subprocesses or "
-        "mutate files without passing through terminal command approval; "
-        "approval is one-shot for this run."
+        "execucao de codigo. O script pode chamar subprocessos ou alterar "
+        "arquivos sem passar pela aprovacao de comandos do terminal; "
+        "a aprovacao vale apenas para esta execucao."
     )
 
     # Isolated backends already sandbox the child — matches the container skip

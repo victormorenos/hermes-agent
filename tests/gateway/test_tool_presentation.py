@@ -3,6 +3,9 @@ from types import SimpleNamespace
 
 from gateway.tool_presentation import (
     ToolPresentationAgent,
+    approval_confirmation_text,
+    format_exec_approval_prompt,
+    format_gateway_heartbeat,
     format_progress_message,
     sanitize_for_auxiliary,
     suppress_tts_duplicate_text,
@@ -127,6 +130,37 @@ def test_unknown_tool_fallback_is_safe_when_auxiliary_fails(monkeypatch):
     )
 
     assert format_progress_message(item) == "🧠 Vou executar uma etapa necessária."
+
+
+def test_approval_prompt_is_portuguese_and_has_choices():
+    prompt = format_exec_approval_prompt(
+        "execute_code <<'PY'\nprint('ok')\nPY",
+        "execute_code script execution",
+        allow_permanent=True,
+    )
+
+    assert "Preciso da sua aprovacao" in prompt
+    assert "execucao de codigo" in prompt
+    assert "`/approve session` aprovar nesta sessao" in prompt
+    assert "`/deny` negar" in prompt
+    assert "Dangerous command" not in prompt
+
+
+def test_heartbeat_is_portuguese_without_raw_tool_name():
+    message = format_gateway_heartbeat(
+        3,
+        iteration=1,
+        max_iterations=90,
+        action="execute_code",
+    )
+
+    assert message == "⏳ Trabalhando — 3 min — etapa 1/90, executando uma etapa tecnica"
+    assert "execute_code" not in message
+
+
+def test_approval_confirmation_text_is_portuguese():
+    assert "sessao" in approval_confirmation_text("session")
+    assert "Negado" in approval_confirmation_text("deny")
 
 
 def test_sanitizer_redacts_sensitive_shapes():

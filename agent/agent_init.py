@@ -79,10 +79,10 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
-        f"ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+        f"ℹ O Codex gpt-5.5 limita o contexto util a 272K tokens. "
+        f"A compactacao automatica foi ajustada para {to_pct}% "
+        f"(antes {from_pct}%) para aproveitar melhor a janela antes de resumir.\n"
+        f"  Para desativar: hermes config set compression.codex_gpt55_autoraise false"
     )
 
 

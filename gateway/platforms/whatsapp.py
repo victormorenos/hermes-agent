@@ -260,6 +260,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     share it. Only transport-specific code lives here.
     """
 
+    SUPPORTS_MESSAGE_EDITING = False
+    DEFAULT_REPLY_PREFIX = ""
+
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
@@ -758,6 +761,45 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 success=True,
                 message_id=last_message_id,
             )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a WhatsApp-native approval list via the local bridge."""
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+
+        try:
+            import aiohttp
+
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/send-approval",
+                json={
+                    "chatId": chat_id,
+                    "command": command,
+                    "description": description,
+                },
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return SendResult(
+                        success=True,
+                        message_id=data.get("messageId"),
+                        raw_response=data,
+                    )
+                error = await resp.text()
+                return SendResult(success=False, error=error)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 

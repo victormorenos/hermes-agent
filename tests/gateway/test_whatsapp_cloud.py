@@ -1677,10 +1677,10 @@ class TestSendClarifyButtons:
 
 
 class TestSendExecApprovalButtons:
-    """``send_exec_approval`` outbound — 2-button Approve/Deny gate."""
+    """``send_exec_approval`` outbound — native approval list."""
 
     @pytest.mark.asyncio
-    async def test_approval_renders_two_buttons(self):
+    async def test_approval_renders_portuguese_list(self):
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
@@ -1696,20 +1696,28 @@ class TestSendExecApprovalButtons:
 
         assert result.success
         payload = adapter._http_client.post.call_args.kwargs["json"]
-        assert payload["interactive"]["type"] == "button"
-        buttons = payload["interactive"]["action"]["buttons"]
-        assert len(buttons) == 2
-        assert "Approve" in buttons[0]["reply"]["title"]
-        assert "Deny" in buttons[1]["reply"]["title"]
-        approve_id = buttons[0]["reply"]["id"]
-        deny_id = buttons[1]["reply"]["id"]
-        assert approve_id.startswith("appr:") and approve_id.endswith(":approve")
+        assert payload["interactive"]["type"] == "list"
+        assert payload["interactive"]["action"]["button"] == "Escolher"
+        rows = payload["interactive"]["action"]["sections"][0]["rows"]
+        assert [row["title"] for row in rows] == [
+            "Aprovar uma vez",
+            "Aprovar sessao",
+            "Aprovar sempre",
+            "Negar",
+        ]
+        approve_id = rows[0]["id"]
+        session_id = rows[1]["id"]
+        deny_id = rows[3]["id"]
+        assert approve_id.startswith("appr:") and approve_id.endswith(":once")
+        assert session_id.startswith("appr:") and session_id.endswith(":session")
         assert deny_id.startswith("appr:") and deny_id.endswith(":deny")
         approval_id = approve_id.split(":")[1]
+        assert session_id.split(":")[1] == approval_id
         assert deny_id.split(":")[1] == approval_id
         body = payload["interactive"]["body"]["text"]
         assert "rm -rf /tmp/foo" in body
         assert "cleanup script" in body
+        assert "Preciso da sua aprovacao" in body
         assert adapter._exec_approval_state[approval_id] == "sess-app-1"
 
     @pytest.mark.asyncio
@@ -1922,18 +1930,18 @@ class TestDispatchInteractiveReplyApproval:
             "from": "15551234567",
             "type": "interactive",
             "interactive": {
-                "type": "button_reply",
-                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+                "type": "list_reply",
+                "list_reply": {"id": "appr:app1:session", "title": "Aprovar sessao"},
             },
         }
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "session")]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
-        assert "Approved" in confirm_payload["text"]["body"]
+        assert "Aprovado para esta sessao" in confirm_payload["text"]["body"]
 
     @pytest.mark.asyncio
     async def test_deny_tap_passes_deny_choice(self, monkeypatch):
@@ -1954,15 +1962,15 @@ class TestDispatchInteractiveReplyApproval:
             "from": "15551234567",
             "type": "interactive",
             "interactive": {
-                "type": "button_reply",
-                "button_reply": {"id": "appr:app2:deny", "title": "Deny"},
+                "type": "list_reply",
+                "list_reply": {"id": "appr:app2:deny", "title": "Negar"},
             },
         }
         await adapter._dispatch_interactive_reply(raw, {})
 
         assert choices_seen == ["deny"]
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
-        assert "Denied" in confirm_payload["text"]["body"]
+        assert "Negado" in confirm_payload["text"]["body"]
 
 
 class TestDispatchInteractiveReplySlashConfirm:

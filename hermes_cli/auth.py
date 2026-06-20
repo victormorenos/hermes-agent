@@ -243,6 +243,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
+    "gemini-vertex": ProviderConfig(
+        id="gemini-vertex",
+        name="Google Vertex AI Gemini",
+        auth_type="service_account",
+        inference_base_url=(
+            "https://aiplatform.googleapis.com/v1/projects/professor-do-iphone/"
+            "locations/global/publishers/google"
+        ),
+        api_key_env_vars=("VERTEX_AI_CREDENTIALS_FILE",),
+        base_url_env_var="VERTEX_AI_BASE_URL",
+    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",
@@ -1398,7 +1409,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.auth_type in {"api_key", "service_account"}:
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue
@@ -1512,6 +1523,8 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "google-vertex": "gemini-vertex", "vertex-gemini": "gemini-vertex",
+        "vertex-ai-gemini": "gemini-vertex",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
@@ -1607,7 +1620,7 @@ def resolve_provider(
 
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+        if pconfig.auth_type not in {"api_key", "service_account"}:
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses
@@ -6082,9 +6095,9 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
 
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
+    """Status snapshot for env-configured providers."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if not pconfig or pconfig.auth_type not in {"api_key", "service_account"}:
         return {"configured": False}
 
     api_key = ""
@@ -6167,7 +6180,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return _get_azure_foundry_auth_status()
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.auth_type in {"api_key", "service_account"}:
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
@@ -6257,14 +6270,14 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
 
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """Resolve API key and base URL for an API-key provider.
+    """Resolve env credential and base URL for an API-key-like provider.
 
     Returns dict with: provider, api_key, base_url, source.
     """
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if not pconfig or pconfig.auth_type not in {"api_key", "service_account"}:
         raise AuthError(
-            f"Provider '{provider_id}' is not an API-key provider.",
+            f"Provider '{provider_id}' is not an env-credential provider.",
             provider=provider_id,
             code="invalid_provider",
         )

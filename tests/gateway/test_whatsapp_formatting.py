@@ -7,11 +7,21 @@ Covers:
 """
 
 import asyncio
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform
+
+
+@pytest.fixture(autouse=True)
+def _fake_aiohttp(monkeypatch):
+    """The adapter only needs ClientTimeout in these transport-unit tests."""
+
+    fake = types.SimpleNamespace(ClientTimeout=lambda **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "aiohttp", fake)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +161,11 @@ class TestFormatMessage:
 
 class TestMessageLimits:
     """WhatsApp message length limits."""
+
+    def test_personal_whatsapp_disables_edit_streaming(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        assert WhatsAppAdapter.SUPPORTS_MESSAGE_EDITING is False
 
     def test_max_message_length_is_practical(self):
         from gateway.platforms.whatsapp import WhatsAppAdapter
@@ -296,6 +311,37 @@ class TestSendChunking:
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Not connected" in result.error
+
+
+class TestApprovalList:
+    """WhatsApp personal bridge approval transport."""
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_uses_bridge_list_endpoint(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(
+            return_value={
+                "messageId": "approval-1",
+                "interactive": "list",
+            }
+        )
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send_exec_approval(
+            "5511999999999@s.whatsapp.net",
+            "execute_code <<'PY'\nprint('ok')\nPY",
+            "sess-1",
+            "execute_code script execution",
+        )
+
+        assert result.success is True
+        assert result.message_id == "approval-1"
+        url = adapter._http_session.post.call_args.args[0]
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert url.endswith("/send-approval")
+        assert payload["chatId"] == "5511999999999@s.whatsapp.net"
+        assert "execute_code" in payload["command"]
 
 
 # ---------------------------------------------------------------------------

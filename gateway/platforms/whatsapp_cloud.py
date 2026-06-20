@@ -79,6 +79,10 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.tool_presentation import (
+    approval_confirmation_text,
+    translate_approval_description,
+)
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -751,12 +755,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Render a dangerous-command approval prompt with native buttons.
+        """Render a dangerous-command approval prompt with a native list.
 
-        Two quick-reply buttons (Approve / Deny). Tapping resolves the
-        waiting agent via ``tools.approval.resolve_gateway_approval`` —
-        same mechanism as the text ``/approve`` flow. The agent thread
-        is blocked until the user taps or types a response.
+        Tapping resolves the waiting agent via
+        ``tools.approval.resolve_gateway_approval`` -- same mechanism as
+        the text ``/approve`` flow.
         """
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
@@ -764,29 +767,49 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
-        cmd_preview = cmd if len(cmd) <= 800 else cmd[:800] + "..."
+        cmd_preview = cmd if len(cmd) <= 700 else cmd[:700] + "..."
+        reason = translate_approval_description(description)
         body_text = self._truncate_body(
-            f"⚠️ *Command Approval Required*\n\n"
+            f"⚠️ *Preciso da sua aprovacao para continuar*\n\n"
             f"```\n{cmd_preview}\n```\n\n"
-            f"Reason: {description}"
+            f"Motivo: {reason}\n\n"
+            "Escolha uma opcao na lista."
         )
 
         approval_id = uuid.uuid4().hex[:12]
         reply_to = (metadata or {}).get("reply_to_message_id") if metadata else None
 
         interactive = {
-            "type": "button",
+            "type": "list",
             "body": {"text": body_text},
             "action": {
-                "buttons": [
+                "button": "Escolher",
+                "sections": [
                     {
-                        "type": "reply",
-                        "reply": {"id": f"appr:{approval_id}:approve", "title": "✅ Approve"},
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {"id": f"appr:{approval_id}:deny", "title": "❌ Deny"},
-                    },
+                        "title": "Aprovacao",
+                        "rows": [
+                            {
+                                "id": f"appr:{approval_id}:once",
+                                "title": "Aprovar uma vez",
+                                "description": "Executa apenas agora",
+                            },
+                            {
+                                "id": f"appr:{approval_id}:session",
+                                "title": "Aprovar sessao",
+                                "description": "Lembra ate esta conversa terminar",
+                            },
+                            {
+                                "id": f"appr:{approval_id}:always",
+                                "title": "Aprovar sempre",
+                                "description": "Salva esta permissao",
+                            },
+                            {
+                                "id": f"appr:{approval_id}:deny",
+                                "title": "Negar",
+                                "description": "Cancela esta acao",
+                            },
+                        ],
+                    }
                 ],
             },
         }
@@ -1670,7 +1693,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             return True
 
-        # Exec approval: appr:<approval_id>:approve|deny
+        # Exec approval: appr:<approval_id>:once|session|always|deny
         if button_id.startswith("appr:"):
             parts = button_id.split(":", 2)
             if len(parts) != 3:
@@ -1684,7 +1707,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     approval_id,
                 )
                 return False
-            if choice not in ("approve", "deny"):
+            choice_map = {
+                "approve": "once",
+                "once": "once",
+                "session": "session",
+                "always": "always",
+                "deny": "deny",
+            }
+            resolved_choice = choice_map.get(choice)
+            if not resolved_choice:
                 self._exec_approval_state[approval_id] = session_key
                 return False
             try:
@@ -1694,7 +1725,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "[whatsapp_cloud] approval resolver unavailable"
                 )
                 return False
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(session_key, resolved_choice)
             if not count:
                 logger.info(
                     "[whatsapp_cloud] approval resolver reported no waiter "
@@ -1703,9 +1734,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 )
             # Send confirmation message — paralleling Telegram's UX.
             try:
-                confirm_text = (
-                    "✅ Approved." if choice == "approve" else "❌ Denied."
-                )
+                confirm_text = approval_confirmation_text(resolved_choice, count or 1)
                 await self.send(str(raw_message.get("from") or ""), confirm_text)
             except Exception:
                 logger.exception("[whatsapp_cloud] approval confirm failed")

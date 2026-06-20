@@ -1437,7 +1437,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
 
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+        if pconfig.auth_type not in {"api_key", "service_account"}:
             continue
         if _is_provider_unhealthy(provider_id):
             logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
@@ -1466,7 +1466,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
-            if provider_id == "gemini":
+            if provider_id in {"gemini", "gemini-vertex"}:
                 from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
                 if is_native_gemini_base_url(base_url):
@@ -1506,7 +1506,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
-        if provider_id == "gemini":
+        if provider_id in {"gemini", "gemini-vertex"}:
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):
@@ -3905,7 +3905,7 @@ def resolve_provider_client(
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
-    if pconfig.auth_type == "api_key":
+    if pconfig.auth_type in {"api_key", "service_account"}:
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
             if client is None:
@@ -3942,7 +3942,7 @@ def resolve_provider_client(
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
 
-        if provider == "gemini":
+        if provider in {"gemini", "gemini-vertex"}:
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):

@@ -9569,9 +9569,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)" and not _intentional_silence:
                 response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
+                    "⚠️ O modelo nao retornou resposta depois de processar as "
+                    "ferramentas. Isso pode acontecer com alguns modelos; tente "
+                    "de novo ou reformule a pergunta."
                 )
             agent_messages = agent_result.get("messages", [])
             try:
@@ -15749,14 +15749,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # can actually type (`!approve`) — typed "/" is blocked in
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
-                )
+                try:
+                    from gateway.tool_presentation import format_exec_approval_prompt
+
+                    msg = format_exec_approval_prompt(
+                        cmd,
+                        desc,
+                        command_prefix=_p,
+                        allow_permanent=bool(approval_data.get("allow_permanent", True)),
+                        max_command_chars=800,
+                    )
+                except Exception:
+                    cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                    msg = (
+                        "⚠️ **Preciso da sua aprovacao para continuar**\n"
+                        f"```\n{cmd_preview}\n```\n"
+                        f"Motivo: {desc}\n\n"
+                        f"Responda `{_p}approve` para aprovar uma vez, "
+                        f"`{_p}approve session` para aprovar nesta sessao, "
+                        f"`{_p}approve always` para aprovar sempre ou `{_p}deny` para negar."
+                    )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
                         _status_adapter.send(
@@ -16343,22 +16355,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         True,
                     )
                 )
+                _activity_action = ""
+                _activity_iter = None
+                _activity_max = None
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
+                        _activity_iter = _a.get("api_call_count")
+                        _activity_max = _a.get("max_iterations")
+                        _activity_action = _a.get("current_tool") or _a.get("last_activity_desc") or ""
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                try:
+                    from gateway.tool_presentation import format_gateway_heartbeat
+
+                    _heartbeat_text = format_gateway_heartbeat(
+                        _elapsed_mins,
+                        iteration=_activity_iter,
+                        max_iterations=_activity_max,
+                        action=_activity_action,
+                        include_detail=_want_iteration_detail,
+                    )
+                except Exception:
+                    _heartbeat_text = f"⏳ Trabalhando — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -16533,25 +16552,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 # Construct a user-facing message with diagnostic context.
                 _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
+                    f"⏱️ Agente sem atividade por {_timeout_mins} min — sem chamadas "
+                    f"de ferramenta ou respostas da API."
                 ]
                 if _cur_tool:
                     _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
+                        f"O agente parece travado em uma etapa tecnica "
+                        f"({_secs_ago:.0f}s desde a ultima atividade, "
+                        f"etapa {_iter_n}/{_iter_max})."
                     )
                 else:
                     _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
+                        f"Ultima atividade: {_last_desc} ({_secs_ago:.0f}s atras, "
+                        f"etapa {_iter_n}/{_iter_max}). "
+                        "O agente pode estar aguardando resposta da API."
                     )
                 _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
+                    "Para aumentar o limite, ajuste agent.gateway_timeout em config.yaml "
+                    "(valor em segundos, 0 = sem limite) e reinicie o gateway.\n"
+                    "Tente de novo ou use /reset para iniciar uma sessao nova."
                 )
 
                 response = {

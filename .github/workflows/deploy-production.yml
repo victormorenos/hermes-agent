@@ -45,3 +45,26 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             "${HERMES_DEPLOY_USER}@${HERMES_DEPLOY_HOST}" deploy
+
+      - name: Configure production defaults
+        env:
+          HERMES_DEPLOY_HOST: ${{ secrets.HERMES_DEPLOY_HOST }}
+          HERMES_DEPLOY_USER: ${{ secrets.HERMES_DEPLOY_USER }}
+          HERMES_DEPLOY_PORT: ${{ secrets.HERMES_DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/hermes_deploy_key \
+            -p "${HERMES_DEPLOY_PORT:-22}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "${HERMES_DEPLOY_USER}@${HERMES_DEPLOY_HOST}" <<'REMOTE'
+          set -euo pipefail
+          if command -v hermes >/dev/null 2>&1; then
+            hermes config set display.language pt
+            hermes config set timezone America/Sao_Paulo
+            hermes config set display.platforms.whatsapp.streaming false
+          fi
+          if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user restart hermes-gateway.service 2>/dev/null || true
+          fi
+          REMOTE

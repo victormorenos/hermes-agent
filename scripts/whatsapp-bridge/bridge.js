@@ -71,7 +71,7 @@ try {
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
-const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
+const DEFAULT_REPLY_PREFIX = '';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
@@ -203,6 +203,63 @@ function normalizePairingPhoneNumber(value) {
   const digits = String(value || '').replace(/\D/g, '');
   if (digits.length < 8 || digits.length > 15) return '';
   return digits;
+}
+
+const APPROVAL_COMMANDS = {
+  hermes_approve_once: '/approve',
+  hermes_approve_session: '/approve session',
+  hermes_approve_always: '/approve always',
+  hermes_deny: '/deny',
+};
+
+function approvalCommandFromInteractive(messageContent) {
+  const rowId = messageContent?.listResponseMessage?.singleSelectReply?.selectedRowId
+    || messageContent?.buttonsResponseMessage?.selectedButtonId
+    || messageContent?.templateButtonReplyMessage?.selectedId
+    || '';
+  if (APPROVAL_COMMANDS[rowId]) return APPROVAL_COMMANDS[rowId];
+
+  const title = String(
+    messageContent?.listResponseMessage?.title
+      || messageContent?.buttonsResponseMessage?.selectedDisplayText
+      || messageContent?.templateButtonReplyMessage?.selectedDisplayText
+      || '',
+  ).trim().toLowerCase();
+  if (!title) return '';
+  if (title.includes('aprovar') && title.includes('sess')) return '/approve session';
+  if (title.includes('aprovar') && title.includes('sempre')) return '/approve always';
+  if (title.includes('aprovar')) return '/approve';
+  if (title.includes('negar') || title.includes('cancelar')) return '/deny';
+  return '';
+}
+
+function translateApprovalDescription(description) {
+  const text = String(description || '').trim();
+  const lowered = text.toLowerCase();
+  if (lowered.includes('execute_code script execution')) {
+    return 'execucao de codigo. O script pode chamar subprocessos ou alterar arquivos; a aprovacao vale apenas para esta execucao.';
+  }
+  if (lowered === 'dangerous command') {
+    return 'acao sensivel que precisa da sua confirmacao.';
+  }
+  return text || 'acao sensivel que precisa da sua confirmacao.';
+}
+
+function approvalText(command, description) {
+  const cmd = String(command || '');
+  const preview = cmd.length > 800 ? `${cmd.slice(0, 800)}...` : cmd;
+  const reason = translateApprovalDescription(description);
+  return [
+    '⚠️ *Preciso da sua aprovacao para continuar*',
+    '',
+    '```',
+    preview,
+    '```',
+    '',
+    `Motivo: ${reason}`,
+    '',
+    'Escolha uma opcao na lista abaixo.',
+  ].join('\n');
 }
 
 async function startSocket() {
@@ -362,7 +419,10 @@ async function startSocket() {
       let mediaType = '';
       const mediaUrls = [];
 
-      if (messageContent.conversation) {
+      const approvalCommand = approvalCommandFromInteractive(messageContent);
+      if (approvalCommand) {
+        body = approvalCommand;
+      } else if (messageContent.conversation) {
         body = messageContent.conversation;
       } else if (messageContent.extendedTextMessage?.text) {
         body = messageContent.extendedTextMessage.text;
@@ -553,6 +613,62 @@ app.post('/send', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Send native approval list, falling back to plain text if the WhatsApp
+// account/client rejects interactive list messages.
+app.post('/send-approval', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, command, description } = req.body;
+  if (!chatId || !command) {
+    return res.status(400).json({ error: 'chatId and command are required' });
+  }
+
+  const text = approvalText(command, description);
+  const rows = [
+    { title: 'Aprovar uma vez', rowId: 'hermes_approve_once', description: 'Executa apenas agora' },
+    { title: 'Aprovar sessao', rowId: 'hermes_approve_session', description: 'Lembra ate esta conversa terminar' },
+    { title: 'Aprovar sempre', rowId: 'hermes_approve_always', description: 'Salva esta permissao' },
+    { title: 'Negar', rowId: 'hermes_deny', description: 'Cancela esta acao' },
+  ];
+
+  try {
+    const payload = {
+      text: formatOutgoingMessage(text),
+      footer: 'Hermes',
+      title: 'Aprovacao necessaria',
+      buttonText: 'Escolher',
+      sections: [{ title: 'Opcoes', rows }],
+    };
+    const sent = await sendWithTimeout(chatId, payload);
+    trackSentMessageId(sent);
+    return res.json({ success: true, messageId: sent?.key?.id, interactive: 'list' });
+  } catch (interactiveErr) {
+    try {
+      const fallback = [
+        text,
+        '',
+        'Se a lista nao aparecer, responda:',
+        '/approve - aprovar uma vez',
+        '/approve session - aprovar nesta sessao',
+        '/approve always - aprovar sempre',
+        '/deny - negar',
+      ].join('\n');
+      const sent = await sendWithTimeout(chatId, { text: formatOutgoingMessage(fallback) });
+      trackSentMessageId(sent);
+      return res.json({
+        success: true,
+        messageId: sent?.key?.id,
+        interactive: 'text-fallback',
+        warning: interactiveErr?.message || 'interactive send failed',
+      });
+    } catch (fallbackErr) {
+      return res.status(500).json({ error: fallbackErr.message });
+    }
   }
 });
 

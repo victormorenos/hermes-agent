@@ -235,8 +235,143 @@ def format_progress_message(
     return None
 
 
+def translate_approval_description(description: Any) -> str:
+    """Translate known approval reasons into concise PT-BR text."""
+
+    text = str(description or "").strip()
+    lowered = text.lower()
+    if "execute_code script execution" in lowered:
+        return (
+            "execucao de codigo. O script pode chamar subprocessos ou alterar "
+            "arquivos sem passar pela aprovacao de comandos do terminal; a "
+            "aprovacao vale apenas para esta execucao."
+        )
+    if lowered in {"dangerous command", "command requires approval"}:
+        return "acao sensivel que precisa da sua confirmacao."
+    return _clean_phrase(text) or "acao sensivel que precisa da sua confirmacao."
+
+
+def format_exec_approval_prompt(
+    command: Any,
+    description: Any = "",
+    *,
+    command_prefix: str = "/",
+    allow_permanent: bool = True,
+    max_command_chars: int = 800,
+) -> str:
+    """Build the plain-text fallback for gateway approval prompts."""
+
+    prefix = command_prefix or "/"
+    cmd = str(command or "")
+    preview = cmd[:max_command_chars] + "..." if len(cmd) > max_command_chars else cmd
+    reason = translate_approval_description(description)
+    options = [
+        f"`{prefix}approve` aprovar uma vez",
+        f"`{prefix}approve session` aprovar nesta sessao",
+    ]
+    if allow_permanent:
+        options.append(f"`{prefix}approve always` aprovar sempre")
+    options.append(f"`{prefix}deny` negar")
+    return (
+        "⚠️ **Preciso da sua aprovacao para continuar**\n"
+        f"```\n{preview}\n```\n"
+        f"Motivo: {reason}\n\n"
+        "Escolha uma opcao:\n"
+        + "\n".join(f"- {item}" for item in options)
+    )
+
+
+def approval_choice_command(choice: str) -> str:
+    normalized = str(choice or "").strip().lower()
+    if normalized in {"approve", "once", "one"}:
+        return "/approve"
+    if normalized in {"session", "sessao", "sessão"}:
+        return "/approve session"
+    if normalized in {"always", "permanent", "permanente"}:
+        return "/approve always"
+    if normalized in {"deny", "cancel", "negate", "negar"}:
+        return "/deny"
+    return ""
+
+
+def approval_confirmation_text(choice: str, count: int = 1) -> str:
+    normalized = str(choice or "").strip().lower()
+    plural = count > 1
+    if normalized in {"approve", "once", "one"}:
+        if not plural:
+            return "✅ Aprovado. O agente vai continuar..."
+        return f"✅ Aprovados {count} comandos. O agente vai continuar..."
+    if normalized in {"session", "sessao", "sessão"}:
+        if not plural:
+            return "✅ Aprovado para esta sessao. O agente vai continuar..."
+        return f"✅ Aprovados {count} comandos para esta sessao. O agente vai continuar..."
+    if normalized in {"always", "permanent", "permanente"}:
+        if not plural:
+            return "✅ Aprovado sempre. O agente vai continuar..."
+        return f"✅ Aprovados {count} comandos permanentemente. O agente vai continuar..."
+    return "❌ Negado." if not plural else f"❌ Negados {count} comandos."
+
+
+def activity_label(action: Any) -> str:
+    """Map technical activity names to short Portuguese progress labels."""
+
+    raw = str(action or "").strip()
+    if not raw:
+        return ""
+    name = _canonical_tool_name(raw.split("(", 1)[0].split()[0])
+    mapping = {
+        "execute_code": "executando uma etapa tecnica",
+        "terminal": "executando uma etapa tecnica",
+        "process": "acompanhando uma tarefa",
+        "web_search": "pesquisando fontes",
+        "search_web": "pesquisando fontes",
+        "web_extract": "abrindo uma fonte",
+        "fetch_url": "abrindo uma fonte",
+        "text_to_speech": "gerando audio",
+        "image_generate": "gerando imagem",
+        "todo": "organizando o plano",
+        "session_search": "consultando o historico",
+        "memory_search": "consultando a memoria",
+        "vision_analyze": "analisando imagem",
+    }
+    if name in mapping:
+        return mapping[name]
+    sanitized = _sanitize_scalar(raw, 80)
+    if not sanitized:
+        return ""
+    if re.fullmatch(r"[a-zA-Z0-9_.:-]+", sanitized):
+        return "executando uma etapa"
+    return sanitized
+
+
+def format_gateway_heartbeat(
+    elapsed_mins: int,
+    *,
+    iteration: Optional[int] = None,
+    max_iterations: Optional[int] = None,
+    action: Any = "",
+    include_detail: bool = True,
+) -> str:
+    parts: list[str] = []
+    if include_detail and iteration and max_iterations:
+        parts.append(f"etapa {iteration}/{max_iterations}")
+    label = activity_label(action)
+    if label:
+        parts.append(label)
+    suffix = f" — {', '.join(parts)}" if parts else ""
+    return f"⏳ Trabalhando — {elapsed_mins} min{suffix}"
+
+
 def sanitize_for_auxiliary(value: Any, *, max_depth: int = 3, max_items: int = 12) -> Any:
     return _sanitize_value(value, max_depth=max_depth, max_items=max_items)
+
+
+def current_turn_has_successful_tts(
+    messages: Iterable[Mapping[str, Any]],
+    *,
+    history_offset: int = 0,
+) -> bool:
+    return bool(_current_turn_successful_tts_texts(messages, history_offset=history_offset))
 
 
 def suppress_tts_duplicate_text(

@@ -279,8 +279,8 @@ def test_pricing_can_force_fresh_nous_tier():
 
 def test_include_unconfigured_appends_canonical_skeletons():
     """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
-    list_authenticated_providers didn't emit. Skeleton rows have empty
-    models and source='canonical'."""
+    list_authenticated_providers didn't emit. Skeleton rows have
+    source='canonical' and may carry static model catalogs."""
     rows = [
         {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
          "total_models": 1, "is_current": True, "is_user_defined": False,
@@ -296,11 +296,13 @@ def test_include_unconfigured_appends_canonical_skeletons():
     seen_slugs = {r["slug"] for r in payload["providers"]}
     for entry in CANONICAL_PROVIDERS:
         assert entry.slug in seen_slugs, f"missing {entry.slug}"
-    # Skeletons have empty models and source='canonical'.
+    # Skeletons are canonical rows; some now expose static models so the
+    # picker can show choices before auth.
     skeletons = [r for r in payload["providers"]
                  if r.get("source") == "canonical"]
-    assert all(r["models"] == [] for r in skeletons)
-    assert all(r["total_models"] == 0 for r in skeletons)
+    assert skeletons
+    assert all(r["source"] == "canonical" for r in skeletons)
+    assert all(r["total_models"] == len(r.get("models") or []) for r in skeletons)
 
 
 def test_include_unconfigured_skips_already_present_slugs():
@@ -350,10 +352,10 @@ def test_picker_hints_adds_warning_to_skeleton_rows():
         assert row["authenticated"] is False
         assert "auth_type" in row
         assert "warning" in row
-        # api_key providers get "paste X to activate" / others get the
+        # env-backed providers get "configure X to activate" / others get the
         # hermes model fallback.
         assert (
-            row["warning"].startswith("paste ")
+            row["warning"].startswith("configure ")
             or row["warning"].startswith("run `hermes model`")
         )
 
@@ -372,7 +374,23 @@ def test_picker_hints_api_key_warning_format():
         r for r in payload["providers"] if r["slug"] == "anthropic"
     )
     assert "ANTHROPIC_API_KEY" in anthropic["warning"]
-    assert anthropic["warning"].startswith("paste ")
+    assert anthropic["warning"].startswith("configure ")
+
+
+def test_gemini_vertex_skeleton_has_models_but_is_not_authenticated():
+    rows = []
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
+
+    vertex = next(r for r in payload["providers"] if r["slug"] == "gemini-vertex")
+    assert vertex["authenticated"] is False
+    assert vertex["auth_type"] == "service_account"
+    assert vertex["key_env"] == "VERTEX_AI_CREDENTIALS_FILE"
+    assert vertex["warning"].startswith("configure VERTEX_AI_CREDENTIALS_FILE")
+    assert "gemini-flash-lite-latest" in vertex["models"]
 
 
 # ─── canonical_order ───────────────────────────────────────────────────
@@ -724,4 +742,3 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
-

@@ -3640,8 +3640,14 @@ class GatewaySlashCommandsMixin:
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
+                return t(
+                    "gateway.approval_expired",
+                    lang="pt" if source.platform == Platform.WHATSAPP else None,
+                )
+            return t(
+                "gateway.approve.no_pending",
+                lang="pt" if source.platform == Platform.WHATSAPP else None,
+            )
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -3657,7 +3663,10 @@ class GatewaySlashCommandsMixin:
 
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
-            return t("gateway.approve.no_pending")
+            return t(
+                "gateway.approve.no_pending",
+                lang="pt" if source.platform == Platform.WHATSAPP else None,
+            )
 
         # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
@@ -3666,7 +3675,11 @@ class GatewaySlashCommandsMixin:
 
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         plural = "plural" if count > 1 else "singular"
-        return t(f"gateway.approve.{choice}_{plural}", count=count)
+        return t(
+            f"gateway.approve.{choice}_{plural}",
+            count=count,
+            lang="pt" if source.platform == Platform.WHATSAPP else None,
+        )
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -3686,15 +3699,24 @@ class GatewaySlashCommandsMixin:
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
+                return t(
+                    "gateway.deny.stale",
+                    lang="pt" if source.platform == Platform.WHATSAPP else None,
+                )
+            return t(
+                "gateway.deny.no_pending",
+                lang="pt" if source.platform == Platform.WHATSAPP else None,
+            )
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
 
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:
-            return t("gateway.deny.no_pending")
+            return t(
+                "gateway.deny.no_pending",
+                lang="pt" if source.platform == Platform.WHATSAPP else None,
+            )
 
         # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)
@@ -3703,8 +3725,15 @@ class GatewaySlashCommandsMixin:
 
         logger.info("User denied %d dangerous command(s) via /deny", count)
         if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
-        return t("gateway.deny.denied_singular")
+            return t(
+                "gateway.deny.denied_plural",
+                count=count,
+                lang="pt" if source.platform == Platform.WHATSAPP else None,
+            )
+        return t(
+            "gateway.deny.denied_singular",
+            lang="pt" if source.platform == Platform.WHATSAPP else None,
+        )
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.
