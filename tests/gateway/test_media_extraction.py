@@ -11,6 +11,9 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
+import ast
+from pathlib import Path
+
 import pytest
 import re
 
@@ -98,6 +101,34 @@ def extract_media_tags_broken(result_messages):
                     has_voice_directive = True
     
     return media_tags, has_voice_directive
+
+
+def test_tool_media_regex_not_reassigned_inside_gateway_functions():
+    """Regression for UnboundLocalError in gateway/run.py.
+
+    _TOOL_MEDIA_RE is a module-level regex. Reassigning it inside a function
+    makes Python treat it as a local variable throughout that function, which
+    broke image/audio delivery when later branches referenced the global.
+    """
+    run_py = Path(__file__).parents[2] / "gateway" / "run.py"
+    tree = ast.parse(run_py.read_text(encoding="utf-8"))
+
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                targets = []
+                if isinstance(child, ast.Assign):
+                    targets = child.targets
+                elif isinstance(child, ast.AnnAssign):
+                    targets = [child.target]
+                elif isinstance(child, ast.AugAssign):
+                    targets = [child.target]
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id == "_TOOL_MEDIA_RE":
+                        offenders.append((node.name, child.lineno))
+
+    assert offenders == []
 
 
 class TestMediaExtraction:
