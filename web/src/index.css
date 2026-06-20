@@ -8,6 +8,24 @@
 @import '@nous-research/ui/styles/fonts.css';
 @import '@nous-research/ui/styles/globals.css';
 
+/* Steve Hermes deployment override:
+   the official dashboard leans on decorative brand fonts that are hard to
+   read in day-to-day operation. Keep monospace terminal/code faces, but map
+   display/body utilities back to the browser/system sans stack. */
+.font-mondwest,
+.font-expanded,
+.font-compressed,
+.font-display {
+  font-family: var(--theme-font-sans) !important;
+}
+
+.text-display,
+.uppercase,
+[class*="tracking-"] {
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
 /* Scan the published design-system bundle so its utility classes survive
    Tailwind's JIT purge. */
 @source '../node_modules/@nous-research/ui/dist';
@@ -266,4 +284,3 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
-

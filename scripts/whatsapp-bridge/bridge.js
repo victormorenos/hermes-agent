@@ -196,10 +196,19 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let isRegistered = false;
+let lastPairingRequestAt = 0;
+
+function normalizePairingPhoneNumber(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length < 8 || digits.length > 15) return '';
+  return digits;
+}
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version } = await fetchLatestBaileysVersion();
+  isRegistered = Boolean(state?.creds?.registered);
 
   sock = makeWASocket({
     version,
@@ -218,7 +227,11 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  sock.ev.on('creds.update', () => {
+    saveCreds();
+    lidToPhone = buildLidMap();
+    isRegistered = Boolean(sock?.authState?.creds?.registered || isRegistered);
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -247,6 +260,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      isRegistered = true;
       console.log('✅ WhatsApp connected!');
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
@@ -714,10 +728,54 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// Request phone-number pairing code.
+// WhatsApp still requires the user to confirm/link on the phone; this endpoint
+// replaces QR-only pairing with Baileys' official requestPairingCode flow.
+app.post('/pairing-code', async (req, res) => {
+  if (!sock) {
+    return res.status(503).json({ error: 'WhatsApp socket is not ready yet' });
+  }
+  if (connectionState === 'connected' || isRegistered || sock?.authState?.creds?.registered) {
+    return res.status(409).json({ error: 'WhatsApp is already paired' });
+  }
+
+  const phoneNumber = normalizePairingPhoneNumber(
+    req.body?.phoneNumber || req.body?.phone || req.body?.number,
+  );
+  if (!phoneNumber) {
+    return res.status(400).json({
+      error: 'phoneNumber must include country code and digits only, e.g. 5511999999999',
+    });
+  }
+
+  const now = Date.now();
+  if (now - lastPairingRequestAt < 30_000) {
+    return res.status(429).json({ error: 'Wait before requesting another pairing code' });
+  }
+  lastPairingRequestAt = now;
+
+  try {
+    const code = await sock.requestPairingCode(phoneNumber);
+    return res.json({
+      ok: true,
+      status: connectionState,
+      phoneNumber,
+      code,
+      expiresInSeconds: 60,
+    });
+  } catch (err) {
+    lastPairingRequestAt = 0;
+    return res.status(500).json({
+      error: err?.message || 'Failed to request WhatsApp pairing code',
+    });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
     status: connectionState,
+    registered: isRegistered,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,

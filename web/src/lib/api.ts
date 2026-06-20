@@ -835,6 +835,15 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
+  requestWhatsAppPairingCode: (body: { phoneNumber: string }) =>
+    fetchJSON<WhatsAppPairingCodeResponse>(
+      "/api/messaging/whatsapp/pairing-code",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
 
   // Gateway / update actions
   restartGateway: () =>
@@ -1696,6 +1705,14 @@ export interface TelegramOnboardingApplyResponse {
   restart_action?: string;
   restart_pid?: number | null;
   restart_error?: string;
+}
+
+export interface WhatsAppPairingCodeResponse {
+  ok: boolean;
+  status: string;
+  phoneNumber: string;
+  code: string;
+  expiresInSeconds?: number;
 }
 
 export interface SessionMessage {

@@ -56,9 +56,18 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
+    if is_vertex_gemini_base_url(normalized):
+        return True
     if "generativelanguage.googleapis.com" not in normalized:
         return False
     return not normalized.endswith("/openai")
+
+
+def is_vertex_gemini_base_url(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return False
+    return "aiplatform.googleapis.com" in normalized and "/publishers/google" in normalized
 
 
 def probe_gemini_tier(
@@ -844,17 +853,18 @@ class GeminiNativeClient:
         http_client: Optional[httpx.Client] = None,
         **_: Any,
     ) -> None:
-        if not (api_key or "").strip():
+        normalized_base = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/")
+        if normalized_base.endswith("/openai"):
+            normalized_base = normalized_base[: -len("/openai")]
+        self._is_vertex = is_vertex_gemini_base_url(normalized_base)
+        if not self._is_vertex and not (api_key or "").strip():
             raise RuntimeError(
                 "Gemini native client requires an API key, but none was provided. "
                 "Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment / ~/.hermes/.env "
                 "(get one at https://aistudio.google.com/app/apikey), or run `hermes setup` "
                 "to configure the Google provider."
             )
-        self.api_key = api_key
-        normalized_base = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/")
-        if normalized_base.endswith("/openai"):
-            normalized_base = normalized_base[: -len("/openai")]
+        self.api_key = api_key or ""
         self.base_url = normalized_base
         self._default_headers = dict(default_headers or {})
         self.chat = _GeminiChatNamespace(self)
@@ -880,9 +890,14 @@ class GeminiNativeClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "x-goog-api-key": self.api_key,
             "User-Agent": "hermes-agent (gemini-native)",
         }
+        if self._is_vertex:
+            from tools.vertex_gemini_audio import access_token
+
+            headers["Authorization"] = f"Bearer {access_token({})}"
+        else:
+            headers["x-goog-api-key"] = self.api_key
         headers.update(self._default_headers)
         return headers
 

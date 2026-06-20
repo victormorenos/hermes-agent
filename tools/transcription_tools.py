@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with cloud and local providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -12,6 +12,7 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **gemini** — Gemini audio understanding via Vertex AI service account.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -90,6 +91,7 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_GEMINI_STT_MODEL = os.getenv("STT_GEMINI_MODEL", "gemini-flash-lite-latest")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -241,6 +243,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "openai",
     "mistral",
     "xai",
+    "gemini",
 })
 
 
@@ -826,6 +829,20 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "gemini":
+            gemini_cfg = stt_config.get("gemini", {})
+            try:
+                from tools.vertex_gemini_audio import credentials_file
+
+                if isinstance(gemini_cfg, dict) and Path(credentials_file(gemini_cfg)).is_file():
+                    return "gemini"
+            except Exception:
+                pass
+            logger.warning(
+                "STT provider 'gemini' configured but Vertex service account file is missing"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > xai > elevenlabs -
@@ -862,6 +879,15 @@ def _get_provider(stt_config: dict) -> str:
     if get_env_value("ELEVENLABS_API_KEY"):
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
+    try:
+        gemini_cfg = stt_config.get("gemini", {})
+        from tools.vertex_gemini_audio import credentials_file
+
+        if isinstance(gemini_cfg, dict) and Path(credentials_file(gemini_cfg)).is_file():
+            logger.info("No local STT available, using Gemini via Vertex AI")
+            return "gemini"
+    except Exception:
+        pass
     return "none"
 
 
@@ -1616,6 +1642,154 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: Gemini via Vertex AI
+# ---------------------------------------------------------------------------
+
+
+def _prepare_gemini_audio_file(file_path: str) -> tuple[str, Optional[str]]:
+    """Return a Gemini-friendly audio path and optional temp path to delete."""
+    ext = Path(file_path).suffix.lower()
+    # WhatsApp voice notes are usually OGG/Opus. Gemini documents OGG Vorbis,
+    # so convert container/codec-ambiguous inputs to WAV before upload.
+    if ext not in {".ogg", ".opus", ".webm", ".m4a", ".mp4", ".mpga", ".mpeg"}:
+        return file_path, None
+
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return file_path, None
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                file_path,
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-loglevel",
+                "error",
+                tmp_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            logger.warning(
+                "Gemini STT ffmpeg conversion failed; sending original audio: %s",
+                result.stderr.decode("utf-8", errors="ignore")[:200],
+            )
+            return file_path, None
+        return tmp_path, tmp_path
+    except Exception as exc:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        logger.warning("Gemini STT ffmpeg conversion failed: %s", exc)
+        return file_path, None
+
+
+def _transcribe_gemini(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe audio using Gemini audio understanding through Vertex AI."""
+    stt_config = _load_stt_config()
+    gemini_config = stt_config.get("gemini", {})
+    if not isinstance(gemini_config, dict):
+        gemini_config = {}
+
+    prompt = str(
+        gemini_config.get("prompt")
+        or "Transcreva fielmente o áudio para texto em português quando aplicável. Retorne apenas a transcrição, sem comentários."
+    )
+    timeout = float(gemini_config.get("timeout", 120))
+    prepared_path, temp_path = _prepare_gemini_audio_file(file_path)
+    uploaded_gs_uri = None
+
+    try:
+        from tools.vertex_gemini_audio import (
+            audio_mime_type,
+            delete_gcs_object,
+            extract_text,
+            inline_audio_part,
+            post_generate_content,
+            upload_audio_to_gcs,
+        )
+
+        if is_truthy_value(gemini_config.get("use_gcs"), default=False):
+            mime_type = audio_mime_type(prepared_path)
+            uploaded_gs_uri = upload_audio_to_gcs(
+                gemini_config,
+                prepared_path,
+                mime_type=mime_type,
+            )
+            audio_part = {"fileData": {"mimeType": mime_type, "fileUri": uploaded_gs_uri}}
+        else:
+            audio_part = inline_audio_part(prepared_path)
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        audio_part,
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "text/plain",
+            },
+        }
+        data = post_generate_content(
+            gemini_config,
+            model_name,
+            payload,
+            timeout=timeout,
+        )
+        transcript_text = extract_text(data)
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "Gemini STT returned empty transcript",
+                "provider": "gemini",
+            }
+        logger.info(
+            "Transcribed %s via Gemini Vertex (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "gemini"}
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}", "provider": "gemini"}
+    except Exception as e:
+        logger.error("Gemini transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Gemini transcription failed: {e}", "provider": "gemini"}
+    finally:
+        if uploaded_gs_uri and is_truthy_value(gemini_config.get("delete_after"), default=True):
+            try:
+                delete_gcs_object(gemini_config, uploaded_gs_uri)
+            except Exception as exc:
+                logger.warning("Could not delete temporary Gemini STT object from GCS: %s", exc)
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1692,6 +1866,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         elevenlabs_cfg = stt_config.get("elevenlabs", {})
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
         return _transcribe_elevenlabs(file_path, model_name)
+
+    if provider == "gemini":
+        gemini_cfg = stt_config.get("gemini", {})
+        if not isinstance(gemini_cfg, dict):
+            gemini_cfg = {}
+        model_name = model or gemini_cfg.get("model", DEFAULT_GEMINI_STT_MODEL)
+        return _transcribe_gemini(file_path, model_name)
 
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in

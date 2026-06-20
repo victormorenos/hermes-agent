@@ -533,11 +533,111 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "whatsapp" && (
+                  <WhatsAppPairingPanel
+                    platform={platform}
+                    showToast={showToast}
+                  />
+                )}
               </CardContent>
             </Card>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function WhatsAppPairingPanel({
+  platform,
+  showToast,
+}: {
+  platform: MessagingPlatform;
+  showToast: (message: string, type: "success" | "error") => void;
+}) {
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [pairingCode, setPairingCode] = useState("");
+  const [pairingPhone, setPairingPhone] = useState("");
+  const [requesting, setRequesting] = useState(false);
+  const [error, setError] = useState("");
+
+  const formattedCode = pairingCode
+    ? pairingCode.match(/.{1,4}/g)?.join(" ") || pairingCode
+    : "";
+
+  const requestCode = async () => {
+    const trimmed = phoneNumber.trim();
+    if (!trimmed) {
+      setError("Informe o número com DDI.");
+      return;
+    }
+    setRequesting(true);
+    setError("");
+    setPairingCode("");
+    try {
+      const res = await api.requestWhatsAppPairingCode({ phoneNumber: trimmed });
+      setPairingCode(res.code);
+      setPairingPhone(res.phoneNumber);
+      showToast("Código de pareamento gerado", "success");
+    } catch (requestError) {
+      setError(String(requestError));
+      showToast(`WhatsApp: ${requestError}`, "error");
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  return (
+    <div className="rounded-sm border border-border bg-background/35 p-4">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div className="grid gap-1.5">
+          <Label htmlFor="whatsapp-pairing-phone">Número com DDI</Label>
+          <Input
+            id="whatsapp-pairing-phone"
+            inputMode="tel"
+            placeholder="5511999999999"
+            value={phoneNumber}
+            onChange={(event) => setPhoneNumber(event.target.value)}
+            disabled={requesting || platform.state === "connected"}
+          />
+        </div>
+        <Button
+          size="sm"
+          className="uppercase"
+          onClick={() => void requestCode()}
+          disabled={requesting || platform.state === "connected"}
+          prefix={requesting ? <Spinner /> : <QrCode className="h-4 w-4" />}
+        >
+          {requesting ? "Gerando…" : "Gerar código"}
+        </Button>
+      </div>
+
+      {platform.state === "connected" && (
+        <div className="mt-3 text-sm text-muted-foreground">
+          WhatsApp já conectado.
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-3 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {formattedCode && (
+        <div className="mt-4 grid gap-2 border border-primary/40 bg-primary/10 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+            Código de pareamento
+          </div>
+          <div className="font-courier text-2xl font-semibold tracking-[0.18em]">
+            {formattedCode}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            No WhatsApp do número {pairingPhone}, abra Dispositivos conectados e
+            use a opção de vincular por número. O código expira em pouco tempo.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

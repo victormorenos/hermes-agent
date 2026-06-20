@@ -717,6 +717,11 @@ class TelegramOnboardingApply(BaseModel):
     profile: Optional[str] = None
 
 
+class WhatsAppPairingCodeRequest(BaseModel):
+    phoneNumber: Optional[str] = None
+    phone_number: Optional[str] = None
+
+
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None
@@ -5439,6 +5444,60 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
         "state": payload["state"],
         "message": "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.",
     }
+
+
+def _whatsapp_bridge_port() -> int:
+    try:
+        _config, _platform, platform_config = _gateway_platform_config("whatsapp")
+        if platform_config and isinstance(platform_config.extra, dict):
+            raw = platform_config.extra.get("bridge_port", 3000)
+            port = int(raw)
+            if 1 <= port <= 65535:
+                return port
+    except Exception:
+        pass
+    return 3000
+
+
+@app.post("/api/messaging/whatsapp/pairing-code")
+async def request_whatsapp_pairing_code(body: WhatsAppPairingCodeRequest):
+    phone_number = (body.phoneNumber or body.phone_number or "").strip()
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phoneNumber is required")
+
+    bridge_port = _whatsapp_bridge_port()
+    url = f"http://127.0.0.1:{bridge_port}/pairing-code"
+    payload = json.dumps({"phoneNumber": phone_number}).encode("utf-8")
+
+    def _post_to_bridge() -> dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Host": f"127.0.0.1:{bridge_port}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(raw) if raw else {}
+            except Exception:
+                data = {}
+            detail = data.get("error") or data.get("detail") or raw or str(exc)
+            raise HTTPException(status_code=exc.code, detail=detail) from exc
+        except urllib.error.URLError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="WhatsApp bridge is not reachable. Restart the gateway and try again.",
+            ) from exc
+
+    return await asyncio.to_thread(_post_to_bridge)
 
 
 # ---------------------------------------------------------------------------

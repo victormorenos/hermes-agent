@@ -1664,14 +1664,6 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    import requests
-
-    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
-    if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
-        )
-
     raw_gemini_config = tts_config.get("gemini", {})
     gemini_config = raw_gemini_config if isinstance(raw_gemini_config, dict) else {}
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
@@ -1699,7 +1691,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         prompt_text = prompt_text[:max_len]
 
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": prompt_text}]}],
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -1710,35 +1702,56 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         },
     }
 
-    endpoint = f"{base_url}/models/{model}:generateContent"
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        headers={"Content-Type": "application/json"},
-        json=payload,
-        timeout=60,
+    from tools.vertex_gemini_audio import (
+        extract_inline_audio_b64,
+        post_generate_content,
+        should_use_vertex,
     )
-    if response.status_code != 200:
-        # Surface the API error message when present
-        try:
-            err = response.json().get("error", {})
-            detail = err.get("message") or response.text[:300]
-        except Exception:
-            detail = response.text[:300]
-        raise RuntimeError(
-            f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
-        )
 
-    try:
+    if should_use_vertex(gemini_config):
+        data = post_generate_content(
+            gemini_config,
+            model,
+            payload,
+            timeout=float(gemini_config.get("timeout", 120)),
+        )
+    else:
+        import requests
+
+        api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
+        if not api_key:
+            raise ValueError(
+                "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+            )
+        base_url = str(
+            gemini_config.get("base_url")
+            or get_env_value("GEMINI_BASE_URL")
+            or DEFAULT_GEMINI_TTS_BASE_URL
+        ).strip().rstrip("/")
+
+        endpoint = f"{base_url}/models/{model}:generateContent"
+        response = requests.post(
+            endpoint,
+            params={"key": api_key},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=60,
+        )
+        if response.status_code != 200:
+            # Surface the API error message when present
+            try:
+                err = response.json().get("error", {})
+                detail = err.get("message") or response.text[:300]
+            except Exception:
+                detail = response.text[:300]
+            raise RuntimeError(
+                f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+            )
         data = response.json()
-        parts = data["candidates"][0]["content"]["parts"]
-        audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
-        if audio_part is None:
-            raise RuntimeError("Gemini TTS response contained no audio data")
-        inline = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
-        audio_b64 = inline.get("data", "")
-    except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
+
+    audio_b64 = extract_inline_audio_b64(data)
+    if not audio_b64:
+        raise RuntimeError("Gemini TTS response contained no audio data")
 
     if not audio_b64:
         raise RuntimeError("Gemini TTS returned empty audio data")

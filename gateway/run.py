@@ -875,7 +875,33 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "image_generate_tool",
+    "video_generate",
+    "video_generate_tool",
 }
+_AUTO_APPEND_MEDIA_JSON_KEYS = {
+    "audio",
+    "document",
+    "documents",
+    "file",
+    "file_path",
+    "file_paths",
+    "files",
+    "host_image",
+    "image",
+    "image_path",
+    "image_paths",
+    "images",
+    "path",
+    "paths",
+    "url",
+    "urls",
+    "video",
+    "video_path",
+    "video_paths",
+    "videos",
+}
+_AUTO_APPEND_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
 
@@ -894,14 +920,7 @@ def _is_interrupted_tool_result(content: Any) -> bool:
 def _strip_interrupted_tool_tails(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Strip interrupted assistant→tool sequences from replay history.
-
-    Older interrupted gateway turns can be followed by a queued real user
-    message, so the interrupted assistant/tool block is not necessarily the
-    final tail by the time we rebuild replay history.  Remove any contiguous
-    assistant(tool_calls) + tool-result block that contains an interrupted tool
-    result, while preserving successful tool-call sequences intact.
-    """
+    """Strip interrupted assistant->tool sequences from replay history."""
     if not agent_history:
         return agent_history
 
@@ -921,8 +940,8 @@ def _strip_interrupted_tool_tails(
                 for m in tool_results
             ):
                 logger.debug(
-                    "Stripping interrupted assistant→tool replay block "
-                    "(indices %d–%d, tool_results=%d)",
+                    "Stripping interrupted assistant->tool replay block "
+                    "(indices %d-%d, tool_results=%d)",
                     i, j - 1, len(tool_results),
                 )
                 i = j
@@ -940,27 +959,7 @@ def _strip_interrupted_tool_tails(
 def _strip_dangling_tool_call_tail(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Strip a trailing ``assistant(tool_calls)`` block left with NO answers.
-
-    When a tool call itself kills the gateway process (``docker restart``,
-    ``systemctl restart``, ``kill``, ``hermes gateway restart``), the process
-    is terminated by SIGKILL *mid-call* — before the tool result is ever
-    written and before the orderly shutdown rewind
-    (``_drop_trailing_empty_response_scaffolding``) can run.  The last thing
-    persisted is the ``assistant`` message that issued the ``tool_calls``,
-    with zero matching ``tool`` rows.
-
-    On resume the model sees an unanswered tool call at the tail and naturally
-    re-issues it — which restarts the gateway again, producing the infinite
-    reboot loop in #49201.  ``_strip_interrupted_tool_tails`` does not catch
-    this because there is no tool result to inspect for an interrupt marker.
-
-    This strips that dangling tail at the source so there is nothing for the
-    model to re-execute.  It only acts when the tail is an
-    ``assistant(tool_calls)`` whose calls have NO corresponding ``tool``
-    results — a completed assistant→tool pair (any tool answers present) is
-    left untouched so genuine mid-progress tool loops still resume.
-    """
+    """Strip a trailing assistant(tool_calls) block left with no answers."""
     if not agent_history:
         return agent_history
 
@@ -973,9 +972,7 @@ def _strip_dangling_tool_call_tail(
         return agent_history
 
     logger.debug(
-        "Stripping dangling unanswered assistant(tool_calls) tail "
-        "(%d call(s)) — process likely killed mid-tool-call by a "
-        "restart/shutdown command (#49201)",
+        "Stripping dangling unanswered assistant(tool_calls) tail (%d call(s))",
         len(last.get("tool_calls") or []),
     )
     return agent_history[:-1]
@@ -986,8 +983,7 @@ _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
 
 
 def _is_auto_continue_noise(content: Any) -> bool:
-    """Return True if this user-message content is a gateway-injected
-    auto-continue note that should NOT be replayed as a real user turn."""
+    """Return True for gateway-injected auto-continue notes."""
     if not isinstance(content, str):
         return False
     return (
@@ -997,13 +993,7 @@ def _is_auto_continue_noise(content: Any) -> bool:
 
 
 def _strip_auto_continue_noise(content: Any) -> Any:
-    """Remove persisted gateway auto-continue note prefix from user text.
-
-    Older gateway builds prepended the recovery note directly to the user
-    message, so the transcript row can contain both the synthetic note and
-    the user's real question.  Strip one or more leading synthetic notes while
-    preserving any real text that follows.
-    """
+    """Remove persisted gateway auto-continue note prefix from user text."""
     if not _is_auto_continue_noise(content):
         return content
     text = str(content)
@@ -1013,13 +1003,6 @@ def _strip_auto_continue_noise(content: Any) -> Any:
             return ""
         text = text[end + 1 :].lstrip()
     return text
-
-# Tools in this set return their deliverable artifact as a JSON payload with a
-# local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
-# returns ``{"success": true, "image": "/abs/path.png"}``). The auto-append path
-# extracts the path from these fields so delivery is deterministic and does not
-# depend on the model restating the path in its final reply.
-_JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -1033,6 +1016,74 @@ _TOOL_MEDIA_RE = re.compile(
     r'txt|csv|apk|ipa))',
     re.IGNORECASE,
 )
+_TOOL_LOCAL_MEDIA_RE = re.compile(
+    r'((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
+
+def _extract_auto_append_json_media_paths(content: str) -> List[str]:
+    """Extract local artifact paths from producer-tool JSON payloads."""
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return []
+
+    paths: List[str] = []
+
+    def add_paths(value: str) -> None:
+        for match in _TOOL_LOCAL_MEDIA_RE.finditer(value):
+            path = match.group(1).strip().rstrip('\",)}]')
+            if path and path not in paths:
+                paths.append(path)
+
+    def walk(value: Any, media_key_context: bool = False) -> None:
+        if isinstance(value, dict):
+            host_image = value.get("host_image")
+            if isinstance(host_image, str):
+                add_paths(host_image)
+                if paths:
+                    return
+            for key, item in value.items():
+                key_lc = str(key).lower()
+                child_media_key = (
+                    media_key_context
+                    or key_lc in _AUTO_APPEND_MEDIA_JSON_KEYS
+                    or key_lc.endswith("_path")
+                    or key_lc.endswith("_url")
+                )
+                walk(item, child_media_key)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item, media_key_context)
+            return
+        if isinstance(value, str) and media_key_context:
+            add_paths(value)
+
+    walk(payload)
+    return paths
+
+
+def _media_path_from_tag(tag: str) -> str:
+    if not tag.startswith("MEDIA:"):
+        return ""
+    return tag[len("MEDIA:"):].strip()
+
+
+def _auto_append_should_force_document(platform: Any, media_tags: List[str]) -> bool:
+    """WhatsApp should receive generated images as documents to avoid compression."""
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value).lower() != "whatsapp":
+        return False
+    for tag in media_tags:
+        path = _media_path_from_tag(tag)
+        if Path(path).suffix.lower() in _AUTO_APPEND_IMAGE_EXTS:
+            return True
+    return False
 
 
 def _collect_auto_append_media_tags(
@@ -1045,9 +1096,10 @@ def _collect_auto_append_media_tags(
     Two layered guards keep stale/example MEDIA: strings out of the reply:
 
     1. Producer-tool allowlist: only tools that intentionally emit deliverable
-       artifacts (TTS) are eligible. Documentation, logs, and search results can
-       contain example strings such as MEDIA:/absolute/path/to/file, which must
-       never be delivered as attachments. (Fixes the original report behind #16721.)
+       artifacts (TTS/image/video generation) are eligible. Documentation, logs,
+       and search results can contain example strings such as
+       MEDIA:/absolute/path/to/file, which must never be delivered as attachments.
+       (Fixes the original report behind #16721.)
     2. Current-turn isolation: only messages produced this turn are scanned, so a
        tool result from an earlier turn (still present in the full message list)
        cannot leak onto a later text-only reply (#34608).
@@ -1086,28 +1138,12 @@ def _collect_auto_append_media_tags(
         if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
             continue
         content = str(msg.get("content") or "")
-        tool_name = tool_name_by_call_id.get(call_id)
-        # JSON-payload tools (image_generate) return a local-file path in a
-        # known field rather than a MEDIA: tag. Extract it so delivery is
-        # deterministic even when the model omits the path from its reply.
-        if tool_name == "image_generate" and "MEDIA:" not in content:
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    path = payload.get(field)
-                    if (isinstance(path, str)
-                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
-                        media_tags.append(f"MEDIA:{path}")
-                        break
-            continue
-        if "MEDIA:" not in content:
-            continue
-        for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('",}')
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                path = match.group(1).strip().rstrip('\",}')
+                if path and path not in history_media_paths:
+                    media_tags.append(f"MEDIA:{path}")
+        for path in _extract_auto_append_json_media_paths(content):
             if path and path not in history_media_paths:
                 media_tags.append(f"MEDIA:{path}")
         if "[[audio_as_voice]]" in content:
@@ -15582,13 +15618,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
@@ -15957,12 +15986,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "context_length": _context_length,
                 }
             
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
+            # Scan tool results for generated artifacts that need to be delivered
+            # as native attachments. TTS embeds MEDIA: tags in JSON; image/video
+            # generation usually returns a JSON path/URL field, and the model's
+            # final text reply may omit both. We collect unique tags from current
+            # tool results and append any that aren't already present in the final
+            # response so the adapter's extract_media() can deliver them once.
             #
             # Scope the scan to THIS turn's tool results only. ``agent_history``
             # was passed into run_conversation as ``conversation_history``, so the
@@ -15991,9 +16020,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if tag not in seen:
                             seen.add(tag)
                             unique_tags.append(tag)
+                    if _auto_append_should_force_document(source.platform, unique_tags):
+                        unique_tags.insert(0, "[[as_document]]")
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+            elif "[[as_document]]" not in final_response:
+                response_media_tags = []
+                for match in _TOOL_MEDIA_RE.finditer(final_response):
+                    path = match.group(1).strip().rstrip('\",}')
+                    if path:
+                        response_media_tags.append(f"MEDIA:{path}")
+                if _auto_append_should_force_document(source.platform, response_media_tags):
+                    final_response = final_response + "\n[[as_document]]"
             
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:

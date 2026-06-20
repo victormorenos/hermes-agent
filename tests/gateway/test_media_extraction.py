@@ -259,6 +259,23 @@ caption
         )
         assert tags == []
 
+    def test_gateway_auto_append_marks_whatsapp_images_as_documents(self):
+        """WhatsApp image attachments should be sent as documents to preserve bytes."""
+        from gateway.run import _auto_append_should_force_document
+
+        assert _auto_append_should_force_document(
+            "whatsapp",
+            ["MEDIA:/tmp/hermes-image.png"],
+        ) is True
+        assert _auto_append_should_force_document(
+            "whatsapp",
+            ["MEDIA:/tmp/hermes-audio.ogg"],
+        ) is False
+        assert _auto_append_should_force_document(
+            "telegram",
+            ["MEDIA:/tmp/hermes-image.png"],
+        ) is False
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn
