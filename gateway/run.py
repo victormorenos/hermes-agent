@@ -1035,9 +1035,11 @@ def _extract_auto_append_json_media_paths(content: str) -> List[str]:
     paths: List[str] = []
 
     def add_paths(value: str) -> None:
+        if "://" in value:
+            return
         for match in _TOOL_LOCAL_MEDIA_RE.finditer(value):
             path = match.group(1).strip().rstrip('\",)}]')
-            if path and path not in paths:
+            if "://" not in path and path not in paths:
                 paths.append(path)
 
     def walk(value: Any, media_key_context: bool = False) -> None:

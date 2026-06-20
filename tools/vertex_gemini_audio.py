@@ -248,6 +248,7 @@ def extract_inline_audio_b64(data: Dict[str, Any]) -> Optional[str]:
         if not isinstance(part, dict) or part.get("thought"):
             continue
         inline = part.get("inlineData") or part.get("inline_data")
-        if isinstance(inline, dict) and inline.get("data"):
-            return inline["data"]
+        if isinstance(inline, dict) and "data" in inline:
+            data = inline.get("data")
+            return data if isinstance(data, str) else None
     return None

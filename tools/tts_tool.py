@@ -1750,10 +1750,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         data = response.json()
 
     audio_b64 = extract_inline_audio_b64(data)
-    if not audio_b64:
-        raise RuntimeError("Gemini TTS response contained no audio data")
-
-    if not audio_b64:
+    if audio_b64 is None:
+        raise RuntimeError("Gemini TTS malformed response: no audio data")
+    if audio_b64 == "":
         raise RuntimeError("Gemini TTS returned empty audio data")
 
     pcm_bytes = base64.b64decode(audio_b64)
