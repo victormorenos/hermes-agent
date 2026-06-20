@@ -159,6 +159,47 @@ caption
         tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
+
+    def test_gateway_auto_append_extracts_image_generate_json_path(self):
+        """Image generation JSON paths are auto-appended when final text omits them."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Gere uma imagem"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_image", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_image",
+                "content": '{"success": true, "image": "/tmp/hermes-image.png"}',
+            },
+            {"role": "assistant", "content": "Pronto."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/hermes-image.png"]
+        assert voice is False
+
+    def test_gateway_auto_append_marks_whatsapp_images_as_documents(self):
+        """WhatsApp image attachments should be sent as documents to preserve bytes."""
+        from gateway.run import _auto_append_should_force_document
+
+        assert _auto_append_should_force_document(
+            "whatsapp",
+            ["MEDIA:/tmp/hermes-image.png"],
+        ) is True
+        assert _auto_append_should_force_document(
+            "whatsapp",
+            ["MEDIA:/tmp/hermes-audio.ogg"],
+        ) is False
+        assert _auto_append_should_force_document(
+            "telegram",
+            ["MEDIA:/tmp/hermes-image.png"],
+        ) is False
     
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""

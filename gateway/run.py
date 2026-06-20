@@ -673,7 +673,36 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
 # from the final gateway reply.
-_AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
+_AUTO_APPEND_MEDIA_TOOL_NAMES = {
+    "text_to_speech",
+    "text_to_speech_tool",
+    "image_generate",
+    "image_generate_tool",
+    "video_generate",
+    "video_generate_tool",
+}
+_AUTO_APPEND_MEDIA_JSON_KEYS = {
+    "audio",
+    "document",
+    "documents",
+    "file",
+    "file_path",
+    "file_paths",
+    "files",
+    "image",
+    "image_path",
+    "image_paths",
+    "images",
+    "path",
+    "paths",
+    "url",
+    "urls",
+    "video",
+    "video_path",
+    "video_paths",
+    "videos",
+}
+_AUTO_APPEND_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -687,6 +716,69 @@ _TOOL_MEDIA_RE = re.compile(
     r'txt|csv|apk|ipa))',
     re.IGNORECASE,
 )
+_TOOL_LOCAL_MEDIA_RE = re.compile(
+    r'((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
+
+def _extract_auto_append_json_media_paths(content: str) -> List[str]:
+    """Extract local artifact paths from producer-tool JSON payloads."""
+    try:
+        payload = json.loads(content)
+    except Exception:
+        return []
+
+    paths: List[str] = []
+
+    def add_paths(value: str) -> None:
+        for match in _TOOL_LOCAL_MEDIA_RE.finditer(value):
+            path = match.group(1).strip().rstrip('\",)}]')
+            if path:
+                paths.append(path)
+
+    def walk(value: Any, media_key_context: bool = False) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_lc = str(key).lower()
+                child_media_key = (
+                    media_key_context
+                    or key_lc in _AUTO_APPEND_MEDIA_JSON_KEYS
+                    or key_lc.endswith("_path")
+                    or key_lc.endswith("_url")
+                )
+                walk(item, child_media_key)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item, media_key_context)
+            return
+        if isinstance(value, str) and media_key_context:
+            add_paths(value)
+
+    walk(payload)
+    return paths
+
+
+def _media_path_from_tag(tag: str) -> str:
+    if not tag.startswith("MEDIA:"):
+        return ""
+    return tag[len("MEDIA:"):].strip()
+
+
+def _auto_append_should_force_document(platform: Any, media_tags: List[str]) -> bool:
+    """WhatsApp should receive generated images as documents to avoid compression."""
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value).lower() != "whatsapp":
+        return False
+    for tag in media_tags:
+        path = _media_path_from_tag(tag)
+        if Path(path).suffix.lower() in _AUTO_APPEND_IMAGE_EXTS:
+            return True
+    return False
 
 
 def _collect_auto_append_media_tags(
@@ -699,9 +791,10 @@ def _collect_auto_append_media_tags(
     Two layered guards keep stale/example MEDIA: strings out of the reply:
 
     1. Producer-tool allowlist: only tools that intentionally emit deliverable
-       artifacts (TTS) are eligible. Documentation, logs, and search results can
-       contain example strings such as MEDIA:/absolute/path/to/file, which must
-       never be delivered as attachments. (Fixes the original report behind #16721.)
+       artifacts (TTS/image/video generation) are eligible. Documentation, logs,
+       and search results can contain example strings such as
+       MEDIA:/absolute/path/to/file, which must never be delivered as attachments.
+       (Fixes the original report behind #16721.)
     2. Current-turn isolation: only messages produced this turn are scanned, so a
        tool result from an earlier turn (still present in the full message list)
        cannot leak onto a later text-only reply (#34608).
@@ -740,10 +833,12 @@ def _collect_auto_append_media_tags(
         if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
             continue
         content = str(msg.get("content") or "")
-        if "MEDIA:" not in content:
-            continue
-        for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('\",}')
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                path = match.group(1).strip().rstrip('\",}')
+                if path and path not in history_media_paths:
+                    media_tags.append(f"MEDIA:{path}")
+        for path in _extract_auto_append_json_media_paths(content):
             if path and path not in history_media_paths:
                 media_tags.append(f"MEDIA:{path}")
         if "[[audio_as_voice]]" in content:
@@ -18371,12 +18466,12 @@ class GatewayRunner:
                     "context_length": _context_length,
                 }
             
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
+            # Scan tool results for generated artifacts that need to be delivered
+            # as native attachments. TTS embeds MEDIA: tags in JSON; image/video
+            # generation usually returns a JSON path/URL field, and the model's
+            # final text reply may omit both. We collect unique tags from current
+            # tool results and append any that aren't already present in the final
+            # response so the adapter's extract_media() can deliver them once.
             #
             # Scope the scan to THIS turn's tool results only. ``agent_history``
             # was passed into run_conversation as ``conversation_history``, so the
@@ -18405,9 +18500,19 @@ class GatewayRunner:
                         if tag not in seen:
                             seen.add(tag)
                             unique_tags.append(tag)
+                    if _auto_append_should_force_document(source.platform, unique_tags):
+                        unique_tags.insert(0, "[[as_document]]")
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+            elif "[[as_document]]" not in final_response:
+                response_media_tags = []
+                for match in _TOOL_MEDIA_RE.finditer(final_response):
+                    path = match.group(1).strip().rstrip('\",}')
+                    if path:
+                        response_media_tags.append(f"MEDIA:{path}")
+                if _auto_append_should_force_document(source.platform, response_media_tags):
+                    final_response = final_response + "\n[[as_document]]"
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).

@@ -59,6 +59,16 @@ gemini = GeminiProfile(
     default_aux_model="gemini-3.5-flash",
 )
 
+gemini_vertex = GeminiProfile(
+    name="gemini-vertex",
+    aliases=("google-vertex", "vertex-gemini", "vertex-ai-gemini"),
+    api_mode="chat_completions",
+    env_vars=(),  # service account file resolved by tools.vertex_gemini_audio
+    base_url="https://aiplatform.googleapis.com/v1/projects/professor-do-iphone/locations/global/publishers/google",
+    auth_type="service_account",
+    default_aux_model="gemini-flash-lite-latest",
+)
+
 google_gemini_cli = GeminiProfile(
     name="google-gemini-cli",
     aliases=("gemini-cli", "gemini-oauth"),
@@ -69,4 +79,5 @@ google_gemini_cli = GeminiProfile(
 )
 
 register_provider(gemini)
+register_provider(gemini_vertex)
 register_provider(google_gemini_cli)
