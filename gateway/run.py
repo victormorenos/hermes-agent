@@ -9574,6 +9574,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
+            try:
+                from gateway.tool_presentation import suppress_tts_duplicate_text
+
+                response = suppress_tts_duplicate_text(
+                    response,
+                    agent_messages,
+                    history_offset=int(agent_result.get("history_offset") or 0),
+                )
+            except Exception as _tts_presentation_err:
+                logger.debug("TTS duplicate suppression failed: %s", _tts_presentation_err)
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
@@ -14513,6 +14523,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        _tool_presentation_agent = [None]
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -14592,7 +14603,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             last_tool[0] = tool_name
             
-            # Build progress message with primary argument preview
+            # Build progress message with primary argument preview.
+            # Verbose remains the technical/debug view; normal gateway
+            # progress is rendered by ToolPresentationAgent below.
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
 
@@ -14667,25 +14680,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_queue.put(msg)
                 return
             
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            # Terminal commands on markdown platforms get a single-line capped
-            # fenced block (built above) instead of the truncated preview.
-            if _code_block_short is not None:
-                msg = _code_block_short
-                last_was_terminal_block[0] = True
-            elif preview:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
-                last_was_terminal_block[0] = False
-            else:
-                msg = f"{emoji} {tool_name}..."
-                last_was_terminal_block[0] = False
+            # "all" / "new" modes: show natural operational intent, never raw
+            # tool names/JSON. This is especially important on WhatsApp, where
+            # technical names like ``text_to_speech:`` read as broken UX.
+            try:
+                from gateway.tool_presentation import (
+                    ToolPresentationAgent,
+                    format_progress_message,
+                )
+                if _tool_presentation_agent[0] is None:
+                    _tool_presentation_agent[0] = ToolPresentationAgent()
+                _tool_schema = None
+                try:
+                    for _candidate_tool in (tools_holder[0] or []):
+                        if not isinstance(_candidate_tool, dict):
+                            continue
+                        _fn = _candidate_tool.get("function")
+                        if isinstance(_fn, dict):
+                            _candidate_name = _fn.get("name")
+                        else:
+                            _candidate_name = _candidate_tool.get("name")
+                        if str(_candidate_name or "") == str(tool_name or ""):
+                            _tool_schema = _candidate_tool
+                            break
+                except Exception:
+                    _tool_schema = None
+                presentation = _tool_presentation_agent[0].present_tool_start(
+                    tool_name,
+                    args or {},
+                    platform=str(getattr(source.platform, "value", source.platform) or ""),
+                    preview=preview,
+                    verbose=False,
+                    tool_schema=_tool_schema,
+                )
+                msg = format_progress_message(presentation, verbose=False)
+            except Exception as _presentation_err:
+                logger.debug("tool presentation failed: %s", _presentation_err)
+                msg = "🧠 Vou executar uma etapa necessária."
+            last_was_terminal_block[0] = False
+            if not msg:
+                return
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same

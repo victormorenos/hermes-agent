@@ -3131,6 +3131,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
+    ("tool_presentation", "Tool presentation", "gateway tool status text"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),

@@ -175,10 +175,12 @@ async def test_baseline_non_interrupted_agent_renders_progress(monkeypatch, tmp_
     rendered = " ".join(c["content"] for c in adapter.sent) + " " + " ".join(
         c["content"] for c in adapter.edits
     )
-    assert "first search" in rendered, (
-        "baseline agent should render its tool-progress event — "
+    assert "Vou pesquisar isso rapidamente" in rendered, (
+        "baseline agent should render natural tool progress — "
         "if this fails the test harness is broken, not the fix"
     )
+    assert "web_search" not in rendered
+    assert "first search" not in rendered
 
 
 @pytest.mark.asyncio

@@ -190,13 +190,30 @@ class ManyProgressLinesAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         cb = self.tool_progress_callback
         assert cb is not None
-        cb("tool.started", "terminal", "first-short", {})
+        def todo_args(active_idx):
+            todos = []
+            for idx in range(1, 9):
+                status = "pending"
+                if idx < active_idx:
+                    status = "completed"
+                elif idx == active_idx:
+                    status = "in_progress"
+                todos.append(
+                    {
+                        "id": str(idx),
+                        "content": f"Verificando etapa {idx} com detalhes suficientes para testar limite",
+                        "status": status,
+                    }
+                )
+            return {"todos": todos, "merge": True}
+
+        cb("tool.started", "todo", "first-short", todo_args(1))
         # Let the progress task create the first editable bubble, then enqueue
         # the rest quickly.  The cancellation drain must roll them into fresh
         # editable bubbles instead of trying to edit the first one past limit.
         time.sleep(0.35)
-        for idx in range(1, 8):
-            cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
+        for idx in range(2, 9):
+            cb("tool.started", "todo", f"overflow-line-{idx}", todo_args(idx))
         time.sleep(0.1)
         return {
             "final_response": "done",
@@ -284,12 +301,15 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": "🧠 Vou executar uma etapa técnica necessária.",
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
     ]
     assert adapter.edits
+    rendered = " ".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert 'terminal: "pwd"' not in rendered
+    assert "browser_navigate" not in rendered
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
 
 
@@ -523,36 +543,27 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
 
 
 def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
+    """Normal mode no longer exposes the raw command preview."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
-    assert "..." in content
-    # Extract the preview part between quotes
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
-    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
+    assert content == "🧠 Vou executar uma etapa técnica necessária."
+    assert "cd /home/teknium" not in content
+    assert "pytest" not in content
+    assert "terminal:" not in content
 
 
 def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
-    """When tool_preview_length is explicitly set (e.g. 120), all/new mode uses that."""
+    """tool_preview_length does not re-enable raw previews in normal mode."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=120)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
-    # Should be longer than the 40-char default
-    assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
-    # But still capped at 120
-    assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+    assert content == "🧠 Vou executar uma etapa técnica necessária."
+    assert "cd /home/teknium" not in content
+    assert "pytest" not in content
+    assert "terminal:" not in content
 
 
 def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
@@ -562,8 +573,9 @@ def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With a 200-char cap, the 165-char command should NOT be truncated
-    assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+    assert content == "🧠 Vou executar uma etapa técnica necessária."
+    assert "cd /home/teknium" not in content
+    assert "pytest" not in content
 
 
 class CommentaryAgent:
@@ -1171,7 +1183,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
 
     async def send_and_invalidate(chat_id, content, reply_to=None, metadata=None):
         result = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
-        if "first command" in content and not invalidated["done"]:
+        if "Vou executar uma etapa técnica necessária" in content and not invalidated["done"]:
             invalidated["done"] = True
             runner._invalidate_session_run_generation(session_key, reason="test_stop")
         return result
@@ -1191,7 +1203,8 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     all_progress_text = " ".join(call["content"] for call in adapter.sent)
     all_progress_text += " ".join(call["content"] for call in adapter.edits)
     assert result["final_response"] == "done"
-    assert 'first command' in all_progress_text
+    assert "Vou executar uma etapa técnica necessária" in all_progress_text
+    assert 'first command' not in all_progress_text
     assert 'second command' not in all_progress_text
 
 
@@ -1352,12 +1365,8 @@ class TerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
-    """Terminal progress on a markdown-capable (supports_code_blocks) gateway
-    renders a bare fenced code block — no language tag (Slack mrkdwn would print
-    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
-    command is collapsed to a single line capped at tool_preview_length so a long
-    or multi-line command doesn't render as a huge block (#42634)."""
+async def test_terminal_progress_normal_mode_hides_raw_command(monkeypatch, tmp_path):
+    """Normal gateway progress renders intent text, not command/path details."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1394,16 +1403,13 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     assert result["final_response"] == "done"
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
-    # Bare fenced block, no language tag (no '```bash').
-    assert "```" in all_content
-    assert "```bash" not in all_content
-    # Non-verbose collapses to the first line + truncation marker — the later
-    # command lines must NOT appear (this was the "huge block" regression).
-    assert "set -euo pipefail" in all_content
+    assert "🧠 Vou executar uma etapa técnica necessária." in all_content
+    assert "```" not in all_content
+    assert "terminal:" not in all_content
+    assert "terminal\n```" not in all_content
+    assert "set -euo pipefail" not in all_content
     assert "npm install -g hyperframes@latest" not in all_content
     assert "node --version" not in all_content
-    # No truncated quoted preview for the terminal command.
-    assert 'terminal: "' not in all_content
 
 
 @pytest.mark.asyncio
@@ -1517,10 +1523,8 @@ class MultiTerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_path):
-    """Back-to-back terminal calls render ONE "terminal" header followed by
-    adjacent code blocks; a different tool in between resets the header so the
-    next terminal call gets a fresh one."""
+async def test_consecutive_terminal_progress_hides_raw_commands(monkeypatch, tmp_path):
+    """Back-to-back terminal calls stay natural in normal mode."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1559,9 +1563,9 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
         call["content"] for call in adapter.edits
     ]
     final = max(contents, key=len) if contents else ""
-    # All four commands present as code blocks.
     for cmd in ("echo one", "echo two", "echo three", "echo four"):
-        assert cmd in final
-    # Exactly TWO terminal headers: one for the first run of three calls,
-    # one for the terminal call after web_search broke the streak.
-    assert final.count("terminal\n```") == 2
+        assert cmd not in final
+    assert "web_search" not in final
+    assert "query stuff" not in final
+    assert "🧠 Vou executar uma etapa técnica necessária." in final
+    assert "🧠 Vou pesquisar isso rapidamente." in final
