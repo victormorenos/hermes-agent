@@ -344,7 +344,8 @@ class TestBuildSessionContextPrompt:
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
         assert "text_to_speech" in prompt
-        assert "instead of saying you cannot send audio" in prompt
+        assert "Use text_to_speech voluntarily" in prompt
+        assert "Keep spoken replies under 30 seconds" in prompt
 
     def test_multi_user_thread_prompt(self):
         """Shared thread sessions show multi-user note instead of single user."""
