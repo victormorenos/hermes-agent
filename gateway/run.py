@@ -3289,6 +3289,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         (provider/api_key/base_url/api_mode), prefer it directly instead of
         resolving fresh global runtime state first.
         """
+        def _keep_gateway_tools(runtime: dict) -> dict:
+            """Messaging gateway turns must stay on Hermes tool dispatch.
+
+            The optional Codex app-server runtime hands the whole turn to a
+            Codex subprocess, which cannot deliver Hermes-native messaging
+            media/tool outputs such as text_to_speech on WhatsApp.
+            """
+            platform = getattr(source, "platform", None)
+            if (
+                source is not None
+                and platform != Platform.LOCAL
+                and runtime.get("api_mode") == "codex_app_server"
+                and runtime.get("provider") in {"openai", "openai-codex"}
+            ):
+                runtime = dict(runtime)
+                runtime["api_mode"] = "codex_responses"
+                logger.info(
+                    "Gateway platform %s uses Hermes tool dispatch; "
+                    "downgrading codex_app_server runtime to codex_responses.",
+                    getattr(platform, "value", str(platform)),
+                )
+            return runtime
+
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
             try:
@@ -3313,7 +3336,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolved_session_key or "", model, override_model,
                     override_runtime.get("provider"),
                 )
-                return override_model, override_runtime
+                return override_model, _keep_gateway_tools(override_runtime)
             # Override exists but has no api_key — fall through to env-based
             # resolution and apply model/provider from the override on top.
             logger.debug(
@@ -3383,7 +3406,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _last_good[resolved_session_key] = model
                 _last_good["*"] = model
 
-        return model, runtime_kwargs
+        return model, _keep_gateway_tools(runtime_kwargs)
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
