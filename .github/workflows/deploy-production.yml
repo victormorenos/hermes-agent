@@ -1,0 +1,47 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'victormorenos/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://stevehermes.atalh.us
+    steps:
+      - name: Install SSH credentials
+        env:
+          HERMES_DEPLOY_KEY: ${{ secrets.HERMES_DEPLOY_KEY }}
+          HERMES_DEPLOY_KNOWN_HOSTS: ${{ secrets.HERMES_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$HERMES_DEPLOY_KEY" > ~/.ssh/hermes_deploy_key
+          chmod 600 ~/.ssh/hermes_deploy_key
+          printf '%s\n' "$HERMES_DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy on server
+        env:
+          HERMES_DEPLOY_HOST: ${{ secrets.HERMES_DEPLOY_HOST }}
+          HERMES_DEPLOY_USER: ${{ secrets.HERMES_DEPLOY_USER }}
+          HERMES_DEPLOY_PORT: ${{ secrets.HERMES_DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/hermes_deploy_key \
+            -p "${HERMES_DEPLOY_PORT:-22}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "${HERMES_DEPLOY_USER}@${HERMES_DEPLOY_HOST}" deploy
