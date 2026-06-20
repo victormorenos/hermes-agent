@@ -65,6 +65,49 @@ class TestGatewayTurnRoutePool:
 
         assert route["runtime"]["credential_pool"] is fake_pool
 
+    def test_messaging_gateway_keeps_hermes_tool_dispatch(self, monkeypatch):
+        """Messaging platforms should not use codex_app_server.
+
+        The Codex app-server runtime bypasses Hermes tool dispatch, so
+        WhatsApp would lose native media/tool delivery such as TTS.
+        """
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg: "gpt-5.5")
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "model": "gpt-5.5",
+                "api_key": "***",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "provider": "openai-codex",
+                "api_mode": "codex_app_server",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            },
+        )
+
+        runner = SimpleNamespace(
+            _session_model_overrides={},
+            _last_resolved_model={},
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="5511999999999@s.whatsapp.net",
+            chat_type="dm",
+        )
+
+        bound = GatewayRunner._resolve_session_agent_runtime.__get__(runner)
+        _, runtime = bound(source=source, session_key="agent:main:whatsapp:dm:test", user_config={})
+
+        assert runtime["provider"] == "openai-codex"
+        assert runtime["api_mode"] == "codex_responses"
+
 
 # ---------------------------------------------------------------------------
 # 3 & 4. Eager fallback deferred/fires based on credential pool
